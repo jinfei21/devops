@@ -1,0 +1,117 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: {{appName}}
+  labels:
+    app: {{appName}}
+    owner: {{owner}}
+    branch: {{targetBranch}}
+    execution: {{currentTimestamp}}
+  annotations:
+    lastUpdated: {{currentTimestamp}}
+    expiryTimestamp: {{expiryTimestamp}}
+spec:
+  strategy:
+    type: {{deployStrategy}}
+  replicas: {{replicas}}
+  selector:
+    matchLabels:
+      app: {{appName}}
+      role: stressor_parent
+      branch: {{targetBranch}}
+      owner: {{owner}}
+  template:
+    metadata:
+      annotations:
+        traffic.sidecar.istio.io/excludeOutboundPorts: "2181"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "10001"
+        prometheus.io/schema: http
+        prometheus.io/scrape: "true"
+      labels:
+        app: {{appName}}
+        owner: {{owner}}
+        branch: {{targetBranch}}
+        execution: {{currentTimestamp}}
+    spec:
+{{ if eq type 'stress' }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: worker
+                    operator: In
+                    values:
+                      - stress
+      tolerations:
+        - effect: NoExecute
+          key: worker
+          operator: Equal
+          value: stress
+{{ end }}
+      volumes:
+        - name: log
+          emptyDir: {}
+        - name: cm
+          configMap:
+            name: stressor-configmap
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: {{appName}}
+          image: docker-hub.yofei.net/release/stressor/worker:{{imageTag}}
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: {{memoryRequests}}Mi
+              cpu: {{cpuRequests}}m
+            limits:
+              memory: {{memoryLimits}}Mi
+              cpu: {{cpuLimits}}m
+          volumeMounts:
+            - name: log
+              mountPath: /logs/boot
+            - name: cm
+              mountPath: /data/
+          envFrom:
+            - secretRef:
+                name: stressor-secret
+          env:
+            - name: __POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: __POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: JAVA_TOOL_OPTIONS
+              value: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005
+            - name: JVM_MEMORY
+              value: -Xmx{{jvmMemory}}m -Xms{{jvmMemory}}m -Xss256k -XX:MetaspaceSize=100m
+            - name: SPRING_PROFILE
+              value: production
+            - name: JAVA_OPTS
+              value: >
+                -Dstr.worker.subject={{testSubject}}
+                -Dstr.uri.includePaths={{includePaths}}
+                -Dstr.uri.excludePaths={{excludePaths}}
+                -Dstr.worker.config.={{vdc}}
+   
+
+        - name: app-logger
+          image: docker-hub.yofei.net/test/fluentd:latest
+          env:
+            - name: APP
+              value: {{appName}}
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: log
+              mountPath: /logs/boot
